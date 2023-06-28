@@ -1,5 +1,5 @@
 import os
-import argparse
+#import argparse
 import numpy as np
 import torch
 
@@ -95,6 +95,9 @@ def initialize_model(args):
     }
     return model_dict
 
+
+### Main suitable for base network and LeNet5
+
 def get_model(args, device):
     """Intialize or load model checkpoint and intialize model and optimizer
     Args:
@@ -122,10 +125,9 @@ if __name__ == '__main__':
     args = parse_args()
     if args.tensorboard:
         writer = SummaryWriter()
+
     # initialize model
-    device = (
-        'cuda' if torch.cuda.is_available() and not args.no_cuda else 'cpu'
-    )
+    device = ('cuda' if torch.cuda.is_available() and not args.no_cuda else 'cpu')
 
     model, optimizer, model_dict = get_model(args, device)
     # define loss function
@@ -163,9 +165,6 @@ if __name__ == '__main__':
     if args.tensorboard:
         writer.close()
 
-    # print model statistics
-    # print('training loss:', train_losses)
-    # print('validation loss:', epoch_losses)
 
     print ("Model built! Getting logits...")
     # Get logits for all validation or test images
@@ -190,8 +189,8 @@ if __name__ == '__main__':
     print("=" * 80)
     print("Done!")
 
-    logits_ts = torch.from_numpy(np.array(logits_nps))
-    labels_ts = torch.from_numpy(np.array(labels_nps))
+    # logits_ts = torch.from_numpy(np.array(logits_nps))
+    # labels_ts = torch.from_numpy(np.array(labels_nps))
 
     # ece = make_model_diagrams(logits_ts, labels_ts)
   

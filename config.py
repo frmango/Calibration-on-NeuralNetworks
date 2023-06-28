@@ -58,5 +58,6 @@ def parse_args():
         '--tensorboard', action='store_true', default=False,
         help='record training log to Tensorboard'
     )
+    
     args = parser.parse_args()
     return args

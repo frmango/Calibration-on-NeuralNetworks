@@ -2,9 +2,17 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
+#import torch.optim as optim
 
-def init_weights(m):
+from layers.BBB.BBBConv import BBB_Conv2d 
+from layers.BBB.BBBLinear import BBB_Linear
+
+from layers.BBB_LRT.BBBConv import BBB_LRT_Conv2d
+from layers.BBB_LRT.BBBLinear import BBB_LRT_Linear
+
+from layers.misc import FlattenLayer, ModuleWrapper
+
+def init_weights_h(m):
     """
     Args:
         m (tensor): Tensor whose elemets are replaced with the value returned by callable.
@@ -24,9 +32,31 @@ def init_weights(m):
                 n = m.in_features
                 m.weight.data.normal_(0, math.sqrt(2. / n))
 
+def init_weights(m):
+    """
+    Args:
+        m (tensor): Tensor whose elemets are replaced with the value returned by callable.
+    ----------------------------
+
+    All weights cannot be initialized to the value 0.0,
+    as the optimization algorithm results in some asymmetry in the error gradient,
+    the Xavier initialization method is employed
+    """
+    if isinstance(m, nn.Conv2d):
+        nn.init.kaiming_uniform_(m.weight, mode='fan_in', nonlinearity='relu')
+    elif isinstance(m, nn.BatchNorm2d):
+        nn.init.constant_(m.weight, 1)
+        nn.init.constant_(m.bias, 0)
+    elif isinstance(m, nn.Linear):
+                n = m.in_features
+                m.weight.data.normal_(0, math.sqrt(1. / n))
+
+
 class Net(nn.Module):
 
     def __init__(self, droprate=0.5):
+        '''A basic architecture'''
+
         super(Net, self).__init__()
         # 3 input image channel, 6 output channels, 5x5 square convolution kernel
         self.conv1 = nn.Conv2d(3, 6, kernel_size=5, stride=1, padding=2)
@@ -37,7 +67,7 @@ class Net(nn.Module):
 
         # He initialization for linear layers
         for m in self.modules():
-             m.apply(init_weights)
+             m.apply(init_weights_h)    # He weight initialization works with Rectified Linear Unit (ReLU) activation function 
 
         # an affine operation: y = Wx + b
         self.fc1 = nn.Linear(120, 84)
@@ -57,6 +87,7 @@ class Net(nn.Module):
 
 
 class LeNet5(nn.Module):
+    '''The architecture of LeNet'''
 
     def __init__(self, n_classes, droprate=0.5):
         super(LeNet5, self).__init__()
@@ -81,7 +112,7 @@ class LeNet5(nn.Module):
             nn.Dropout(p=droprate),     # adding dropout layer
             nn.Linear(in_features=84, out_features=10),
         )
-        # He initialization for linear layers
+        # Xavier initialization for linear layers
         for m in self.classifier.modules():
             m.apply(init_weights)
 
@@ -98,123 +129,49 @@ class LeNet5(nn.Module):
         return mean_logits,probs
     
 
+class BBBLeNet(ModuleWrapper):
+    '''The architecture of LeNet with Bayesian Layers'''
 
-class VGG16(nn.Module):
+    def __init__(self, outputs, inputs, priors, layer_type='lrt', activation_type='softplus'):
+        super(BBBLeNet, self).__init__()
 
-    def __init__(self, num_classes=10):
-        # calling constructor of parent class
-        super(VGG16, self).__init__()
-        self.layer1 = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU())
-        self.layer1.apply(init_weights)
+        self.num_classes = outputs
+        self.layer_type = layer_type
+        self.priors = priors
 
-        self.layer2 = nn.Sequential(
-            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(), 
-            nn.MaxPool2d(kernel_size = 2, stride = 2))
-        self.layer2.apply(init_weights)
+        if layer_type=='lrt':
+            BBBLinear = BBB_LRT_Linear
+            BBBConv2d = BBB_LRT_Conv2d
+        elif layer_type=='bbb':
+            BBBLinear = BBB_Linear
+            BBBConv2d = BBB_Conv2d
+        else:
+            raise ValueError("Undefined layer_type")
+        
+        if activation_type=='softplus':
+            self.act = nn.Softplus
+        elif activation_type=='relu':
+            self.act = nn.ReLU
+        else:
+            raise ValueError("Only softplus or relu supported")
 
-        self.layer3 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU())
-        self.layer3.apply(init_weights)
+        self.conv1 = BBBConv2d(inputs, 6, 5, padding=0, bias=True, priors=self.priors)
+        self.act1 = self.act()
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
 
-        self.layer4 = nn.Sequential(
-            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size = 2, stride = 2))
-        self.layer4.apply(init_weights)
+        self.conv2 = BBBConv2d(6, 16, 5, padding=0, bias=True, priors=self.priors)
+        self.act2 = self.act()
+        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
 
-        self.layer5 = nn.Sequential(
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU())
-        self.layer5.apply(init_weights)
+        self.flatten = FlattenLayer(5 * 5 * 16)
+        self.fc1 = BBBLinear(5 * 5 * 16, 120, bias=True, priors=self.priors)
+        self.act3 = self.act()
 
-        self.layer6 = nn.Sequential(
-            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU())
-        self.layer6.apply(init_weights)
+        self.fc2 = BBBLinear(120, 84, bias=True, priors=self.priors)
+        self.act4 = self.act()
 
-        self.layer7 = nn.Sequential(
-            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size = 2, stride = 2))
-        self.layer7.apply(init_weights)
+        self.fc3 = BBBLinear(84, outputs, bias=True, priors=self.priors)
 
-        self.layer8 = nn.Sequential(
-            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU())
-        self.layer8.apply(init_weights)
 
-        self.layer9 = nn.Sequential(
-            nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU())
-        self.layer9.apply(init_weights)
+    # No need to define forward method. It'll automatically be taken care of by ModuleWrapper
 
-        self.layer10 = nn.Sequential(
-            nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size = 2, stride = 2))
-        self.layer10.apply(init_weights)
-
-        self.layer11 = nn.Sequential(
-            nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU())
-        self.layer11.apply(init_weights)
-
-        self.layer12 = nn.Sequential(
-            nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU())
-        self.layer12.apply(init_weights)
-
-        self.layer13 = nn.Sequential(
-            nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size = 2, stride = 2)) # Max pooling over a (2, 2) window
-        self.layer13.apply(init_weights)
-
-        self.fc = nn.Sequential(
-            nn.Dropout(0.5),
-            nn.Linear(7*7*512, 4096),
-            nn.ReLU())
-        self.fc1 = nn.Sequential(
-            nn.Dropout(0.5),
-            nn.Linear(4096, 4096),
-            nn.ReLU())
-        self.fc2= nn.Sequential(
-            nn.Linear(4096, num_classes))
-     
-    def forward(self, x):
-        out = self.layer1(x)
-        out = self.layer2(out)
-        out = self.layer3(out)
-        out = self.layer4(out)
-        out = self.layer5(out)
-        out = self.layer6(out)
-        out = self.layer7(out)
-        out = self.layer8(out)
-        out = self.layer9(out)
-        out = self.layer10(out)
-        out = self.layer11(out)
-        out = self.layer12(out)
-        out = self.layer13(out)
-        out = out.reshape(out.size(0), -1) # flatten all dimensions except the batch dimension
-        out = self.fc(out)
-        out = self.fc1(out)
-        out = self.fc2(out)
-        return out
-    
